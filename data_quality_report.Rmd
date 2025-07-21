@@ -1,0 +1,292 @@
+---
+title: "HER2 Integration Project - Data Quality Report"
+subtitle: "Session 1: TCGA-BRCA Data Acquisition"
+author: "Research Team"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: hide
+    fig_width: 10
+    fig_height: 6
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(jsonlite)
+library(knitr)
+library(VennDiagram)
+library(gridExtra)
+
+# Load session metadata
+metadata <- fromJSON("metadata/session1_metadata.json")
+```
+
+# Executive Summary
+
+## Session Overview
+- **Objective**: `r metadata$objective`
+- **Date**: `r metadata$date`
+- **Duration**: `r round(metadata$duration_minutes, 1)` minutes
+- **Status**: ✅ Complete
+
+## Key Metrics
+```{r summary_metrics, echo=FALSE}
+metrics_df <- data.frame(
+  Metric = c(
+    "Total Unique Patients",
+    "Complete Data Cases", 
+    "Clinical Data Available",
+    "RNA Expression Available",
+    "Copy Number Available",
+    "Complete Data Percentage"
+  ),
+  Value = c(
+    ifelse(is.null(metadata$quality_metrics$total_unique_patients), "TBD", metadata$quality_metrics$total_unique_patients),
+    ifelse(is.null(metadata$sample_counts$complete_data), "TBD", metadata$sample_counts$complete_data),
+    ifelse(is.null(metadata$sample_counts$total_clinical), "TBD", metadata$sample_counts$total_clinical),
+    ifelse(is.null(metadata$sample_counts$total_rna), "TBD", metadata$sample_counts$total_rna),
+    ifelse(is.null(metadata$sample_counts$total_cnv), "TBD", metadata$sample_counts$total_cnv),
+    ifelse(is.null(metadata$quality_metrics$complete_data_percent), "TBD%", paste0(metadata$quality_metrics$complete_data_percent, "%"))
+  )
+)
+
+kable(metrics_df, caption = "Data Acquisition Summary")
+```
+
+# Data Acquisition Details
+
+## Datasets Created
+```{r datasets_table, echo=FALSE}
+if(length(metadata$datasets_created) > 0) {
+  datasets_df <- data.frame(
+    Dataset = metadata$datasets_created,
+    Description = c(
+      "Clinical data with patient characteristics and outcomes",
+      "ERBB2 RNA expression levels from RNA-seq",
+      "ERBB2 copy number alteration scores"
+    )[1:length(metadata$datasets_created)],
+    Status = "✅ Complete"
+  )
+  
+  kable(datasets_df, caption = "Created Datasets")
+} else {
+  cat("No datasets created in this session.")
+}
+```
+
+# Platform Data Analysis
+
+```{r load_data, include=FALSE}
+# Try to load the actual data files for analysis
+clinical_data <- tryCatch(readRDS("data/processed/tcga_clinical.rds"), error = function(e) NULL)
+rna_data <- tryCatch(readRDS("data/processed/tcga_expression.rds"), error = function(e) NULL)
+cnv_data <- tryCatch(readRDS("data/processed/tcga_cnv.rds"), error = function(e) NULL)
+```
+
+## Clinical Data Overview
+```{r clinical_overview}
+if(!is.null(clinical_data)) {
+  cat("Clinical data loaded successfully with", nrow(clinical_data), "patients\n")
+  
+  # Age distribution
+  if("age_years" %in% names(clinical_data)) {
+    age_plot <- ggplot(clinical_data, aes(x = age_years)) +
+      geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+      labs(title = "Age Distribution", x = "Age (years)", y = "Count") +
+      theme_minimal()
+    
+    print(age_plot)
+  }
+  
+  # Sample characteristics table
+  char_summary <- clinical_data %>%
+    summarise(
+      n_patients = n(),
+      median_age = median(age_years, na.rm = TRUE),
+      age_iqr_low = quantile(age_years, 0.25, na.rm = TRUE),
+      age_iqr_high = quantile(age_years, 0.75, na.rm = TRUE),
+      missing_age = sum(is.na(age_years)),
+      male_count = sum(gender == "male", na.rm = TRUE),
+      female_count = sum(gender == "female", na.rm = TRUE)
+    )
+  
+  kable(char_summary, caption = "Clinical Data Summary", digits = 1)
+} else {
+  cat("Clinical data not available for analysis.")
+}
+```
+
+## RNA Expression Analysis
+```{r rna_analysis}
+if(!is.null(rna_data)) {
+  cat("RNA expression data loaded with", nrow(rna_data), "samples\n")
+  
+  # ERBB2 expression distribution
+  expr_plot <- ggplot(rna_data, aes(x = erbb2_log2)) +
+    geom_histogram(bins = 50, fill = "darkgreen", alpha = 0.7) +
+    labs(title = "ERBB2 Expression Distribution", 
+         x = "Log2(ERBB2 + 1)", y = "Count") +
+    theme_minimal()
+  
+  print(expr_plot)
+  
+  # Expression summary statistics
+  expr_summary <- rna_data %>%
+    summarise(
+      n_samples = n(),
+      median_expression = median(erbb2_log2, na.rm = TRUE),
+      q25_expression = quantile(erbb2_log2, 0.25, na.rm = TRUE),
+      q75_expression = quantile(erbb2_log2, 0.75, na.rm = TRUE),
+      min_expression = min(erbb2_log2, na.rm = TRUE),
+      max_expression = max(erbb2_log2, na.rm = TRUE),
+      zero_counts = sum(erbb2_counts == 0, na.rm = TRUE)
+    )
+  
+  kable(expr_summary, caption = "ERBB2 Expression Summary", digits = 2)
+} else {
+  cat("RNA expression data not available for analysis.")
+}
+```
+
+## Copy Number Analysis  
+```{r cnv_analysis}
+if(!is.null(cnv_data)) {
+  cat("Copy number data loaded with", nrow(cnv_data), "samples\n")
+  
+  # CNV score distribution
+  cnv_plot <- ggplot(cnv_data, aes(x = erbb2_cnv_score)) +
+    geom_histogram(bins = 50, fill = "darkorange", alpha = 0.7) +
+    labs(title = "ERBB2 Copy Number Distribution", 
+         x = "Copy Number Score", y = "Count") +
+    theme_minimal()
+  
+  print(cnv_plot)
+  
+  # CNV summary statistics
+  cnv_summary <- cnv_data %>%
+    summarise(
+      n_samples = n(),
+      median_cnv = median(erbb2_cnv_score, na.rm = TRUE),
+      q25_cnv = quantile(erbb2_cnv_score, 0.25, na.rm = TRUE),
+      q75_cnv = quantile(erbb2_cnv_score, 0.75, na.rm = TRUE),
+      min_cnv = min(erbb2_cnv_score, na.rm = TRUE),
+      max_cnv = max(erbb2_cnv_score, na.rm = TRUE),
+      amplified_samples = sum(erbb2_cnv_score > log2(1.5), na.rm = TRUE)
+    )
+  
+  kable(cnv_summary, caption = "ERBB2 Copy Number Summary", digits = 3)
+} else {
+  cat("Copy number data not available for analysis.")
+}
+```
+
+# Data Overlap Analysis
+
+```{r overlap_analysis}
+if(!is.null(clinical_data) && !is.null(rna_data) && !is.null(cnv_data)) {
+  
+  # Create overlap summary
+  clinical_ids <- clinical_data$patient_id
+  rna_ids <- rna_data$patient_id  
+  cnv_ids <- cnv_data$patient_id
+  
+  all_ids <- unique(c(clinical_ids, rna_ids, cnv_ids))
+  
+  overlap_summary <- data.frame(
+    Platform = c("Clinical", "RNA Expression", "Copy Number"),
+    Available_Samples = c(length(clinical_ids), length(rna_ids), length(cnv_ids)),
+    Unique_Patients = c(length(unique(clinical_ids)), length(unique(rna_ids)), length(unique(cnv_ids)))
+  )
+  
+  kable(overlap_summary, caption = "Platform Data Availability")
+  
+  # Overlap counts
+  overlap_counts <- data.frame(
+    Data_Combination = c(
+      "Clinical Only",
+      "Clinical + RNA", 
+      "Clinical + CNV",
+      "RNA + CNV",
+      "All Three Platforms",
+      "Total Unique"
+    ),
+    Patient_Count = c(
+      length(setdiff(clinical_ids, union(rna_ids, cnv_ids))),
+      length(intersect(clinical_ids, rna_ids)),
+      length(intersect(clinical_ids, cnv_ids)), 
+      length(intersect(rna_ids, cnv_ids)),
+      length(intersect(intersect(clinical_ids, rna_ids), cnv_ids)),
+      length(all_ids)
+    )
+  )
+  
+  kable(overlap_counts, caption = "Data Platform Overlaps")
+  
+} else {
+  cat("Cannot perform overlap analysis - missing data files.")
+}
+```
+
+# Quality Control Flags
+
+## Missing Data Assessment
+```{r missing_data}
+missing_summary <- data.frame(
+  Issue = c(
+    "HER2 IHC Status Missing", 
+    "Clinical Covariates Missing",
+    "RNA Expression Outliers",
+    "Copy Number Outliers",
+    "Survival Data Missing"
+  ),
+  Status = c(
+    "⚠️ To be extracted in Session 2",
+    "⚠️ To be processed in Session 2", 
+    "✅ Will be assessed",
+    "✅ Will be assessed",
+    "⚠️ To be validated"
+  ),
+  Action_Required = c(
+    "Extract from clinical supplement files",
+    "Harmonize clinical variables",
+    "Apply statistical outlier detection", 
+    "Apply statistical outlier detection",
+    "Validate survival endpoints"
+  )
+)
+
+kable(missing_summary, caption = "Quality Control Action Items")
+```
+
+## Next Session Preparation
+
+### Files Ready for Session 2:
+```{r next_session}
+if(length(metadata$next_session_inputs) > 0) {
+  cat("✅ Ready for Session 2:\n")
+  for(file in metadata$next_session_inputs) {
+    cat("  -", file, "\n")
+  }
+} else {
+  cat("⚠️ No files ready - review Session 1 execution")
+}
+```
+
+### Session 2 Objectives:
+1. **Data Harmonization**: Standardize HER2 IHC categories and extract from clinical supplements
+2. **Quality Control**: Implement comprehensive QC procedures and outlier detection  
+3. **Missing Data**: Develop multiple imputation strategy for incomplete cases
+4. **Clinical Variables**: Process ER/PR status, tumor grade, stage, and molecular subtypes
+5. **Analysis Dataset**: Create final harmonized dataset ready for modeling
+
+---
+
+**Report Generated**: `r Sys.time()`  
+**Next Session**: Data Harmonization & Quality Control

@@ -1,0 +1,51 @@
+{
+  "dataset_info": {
+    "total_patients": [1024],
+    "total_variables": [34],
+    "complete_cases": [1024],
+    "completeness_rate": [1]
+  },
+  "her2_distribution": {
+    "ihc_standardized": {
+      "0": [630],
+      "2+": [207],
+      "3+": [187],
+      "4": [0]
+    },
+    "binary_classification": {
+      "Equivocal": [207],
+      "Negative": [630],
+      "Positive": [187],
+      "4": [0]
+    },
+    "multiplatform": {
+      "Discordant": [438],
+      "Triple_Negative": [492],
+      "Triple_Positive": [94],
+      "4": [0]
+    }
+  },
+  "expression_stats": {
+    "mean_log2": [14.3404],
+    "sd_log2": [1.5878],
+    "range_log2": [7.6865, 19.9244],
+    "high_expressors": [256]
+  },
+  "cnv_stats": {
+    "mean_cnv": [0.1492],
+    "sd_cnv": [0.4855],
+    "range_cnv": [-0.8841, 1.8909],
+    "amplification_rate": [0.3398],
+    "cnv_calls": {
+      "Gain": [348],
+      "Loss": [180],
+      "Neutral": [496],
+      "4": [0]
+    }
+  },
+  "transformation_summary": {
+    "transformations_applied": ["IHC_standardization", "RNA_normalization", "CNV_processing"],
+    "imputation_cases": [0],
+    "outliers_flagged": [39]
+  }
+}

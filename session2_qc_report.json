@@ -1,0 +1,58 @@
+{
+  "session_info": {
+    "session_id": [2],
+    "date": ["2025-07-17"],
+    "objective": ["Data harmonization and quality control"],
+    "start_time": ["2025-07-17 20:41:28"],
+    "dependencies": ["tcga_clinical.rds", "tcga_expression.rds", "tcga_cnv.rds", "tcga_combined.rds"],
+    "transformations_applied": ["IHC_standardization", "RNA_normalization", "CNV_processing"],
+    "outliers_removed": [39],
+    "imputation_applied": [0],
+    "platform_completeness": {
+      "IHC": ["100.0%"],
+      "RNA": ["100.0%"],
+      "CNV": ["100.0%"],
+      "all_three": ["100.0%"]
+    },
+    "final_sample_size": [1024]
+  },
+  "data_summary": {
+    "total_patients": [1024],
+    "total_variables": [34],
+    "complete_cases": [1024],
+    "completeness_rate": [1]
+  },
+  "her2_distribution": {
+    "ihc_standardized": {
+      "0": [630],
+      "2+": [207],
+      "3+": [187],
+      "4": [0]
+    },
+    "binary_classification": {
+      "Equivocal": [207],
+      "Negative": [630],
+      "Positive": [187],
+      "4": [0]
+    },
+    "multiplatform": {
+      "Discordant": [438],
+      "Triple_Negative": [492],
+      "Triple_Positive": [94],
+      "4": [0]
+    }
+  },
+  "correlation_analysis": {
+    "correlation_matrix": [
+      [1, 0.3533, -0.0207],
+      [0.3533, 1, 0.0289],
+      [-0.0207, 0.0289, 1]
+    ],
+    "sample_size": [1024]
+  },
+  "outlier_analysis": {
+    "total_outliers": [39],
+    "outlier_rate": [0.0381]
+  },
+  "plots_generated": ["her2_rna_distribution.png", "rna_cnv_scatter.png", "cnv_distribution.png", "multiplatform_concordance.png"]
+}
