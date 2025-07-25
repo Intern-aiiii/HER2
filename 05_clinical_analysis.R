@@ -1,249 +1,303 @@
-# HER2 Integration Project - Session 5: Clinical Outcome Analysis
+# HER2 Integration Project - Session 5: Clinical Validation & Survival Analysis (FIXED)
 # Author: Research Team
-# Date: 2025-01-XX
-# Objective: Demonstrate clinical relevance and superior prognostic value
+# Date: January 2025
+# Objective: Clinical validation using REAL survival data and Bayesian scores
 
 # Load required libraries
-library(dplyr)
-library(survival)
-library(survminer)
-library(ggplot2)
-library(gridExtra)
-library(rms)
-library(timeROC)
-library(pec)
-library(jsonlite)
-library(RColorBrewer)
-library(broom)
-library(knitr)
-library(forestplot)
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(survival)
+  library(survminer)
+  library(ggplot2)
+  library(gridExtra)
+  library(jsonlite)
+  library(RColorBrewer)
+  library(tidyr)
+})
 
-# Initialize session metadata
+# Ensure dplyr functions are available
+if (!requireNamespace("dplyr", quietly = TRUE)) {
+  stop("dplyr package is required but not available")
+}
+
+# Test dplyr functionality
+test_df <- data.frame(a = 1:3, b = 4:6)
+test_result <- test_df %>% dplyr::select(a)
+if (nrow(test_result) != 3) {
+  stop("dplyr is not functioning correctly")
+}
+
+# Session metadata initialization
 session_metadata <- list(
   session_id = 5,
   date = Sys.Date(),
-  objective = "Clinical outcome analysis and prognostic validation",
-  start_time = Sys.time()
+  objective = "Clinical validation and survival analysis using real TCGA data",
+  start_time = Sys.time(),
+  data_source = "modeling_results.rds with real Bayesian scores"
 )
 
-cat("=== HER2 Integration Project - Session 5 ===\n")
-cat("Starting clinical outcome analysis...\n\n")
+cat("=== HER2 Integration Project - Session 5 (FIXED) ===\n")
+cat("Objective: Clinical validation using REAL modeling results\n")
+cat("Start time:", as.character(session_metadata$start_time), "\n\n")
 
-# =============================================================================
-# 1. LOAD VALIDATION RESULTS AND PREPARE SURVIVAL DATA
-# =============================================================================
-
-cat("1. Loading validation results and preparing survival data...\n")
-
-# Load results from previous sessions
-validation_results <- readRDS("data/processed/validation_results.rds")
-fitted_model <- readRDS("data/processed/fitted_model.rds")
-harmonized_data <- readRDS("data/processed/harmonized_dataset.rds")
-
-# Prepare comprehensive survival dataset
-survival_data <- harmonized_data %>%
-  filter(
-    !is.na(survival_time), 
-    !is.na(survival_status),
-    survival_time > 0
-  ) %>%
-  mutate(
-    # Convert survival time to years
-    survival_years = survival_time / 365.25,
-    
-    # Create traditional HER2 classifications
-    her2_traditional = case_when(
-      her2_ihc_standard %in% c("0", "1+") ~ "Negative",
-      her2_ihc_standard %in% c("2+", "3+") ~ "Positive",
-      TRUE ~ NA_character_
-    ),
-    
-    # RNA expression categories
-    rna_quartile_label = case_when(
-      erbb2_rna_quartile == 1 ~ "Q1 (Low)",
-      erbb2_rna_quartile == 2 ~ "Q2",
-      erbb2_rna_quartile == 3 ~ "Q3", 
-      erbb2_rna_quartile == 4 ~ "Q4 (High)",
-      TRUE ~ NA_character_
-    ),
-    
-    # CNV categories
-    cnv_category_label = case_when(
-      erbb2_cnv_category == "Lost" ~ "Loss",
-      erbb2_cnv_category == "Neutral" ~ "Neutral",
-      erbb2_cnv_category == "Gained" ~ "Gain",
-      erbb2_cnv_category == "Amplified" ~ "Amplification",
-      TRUE ~ NA_character_
-    ),
-    
-    # Create survival endpoints
-    os_event = survival_status,
-    os_time = survival_years,
-    
-    # Create progression-free interval (simulate from survival data)
-    pfi_event = ifelse(survival_status == 1, 1, 
-                       ifelse(survival_years < 5, rbinom(n(), 1, 0.3), 0)),
-    pfi_time = ifelse(pfi_event == 1, 
-                      survival_years * runif(n(), 0.5, 1.0), 
-                      survival_years),
-    
-    # Age categories for subgroup analysis
-    age_group = case_when(
-      age < 50 ~ "< 50 years",
-      age >= 50 & age < 65 ~ "50-64 years",
-      age >= 65 ~ "≥ 65 years"
-    ),
-    
-    # Hormone receptor status
-    hr_status = case_when(
-      er_positive & pr_positive ~ "ER+/PR+",
-      er_positive & !pr_positive ~ "ER+/PR-",
-      !er_positive & pr_positive ~ "ER-/PR+",
-      !er_positive & !pr_positive ~ "ER-/PR-"
-    )
-  )
-
-# Add integrated latent variable scores
-if ("zeta_posterior" %in% names(fitted_model$latent_estimates)) {
-  survival_data <- survival_data %>%
-    left_join(
-      fitted_model$latent_estimates %>% 
-        select(patient_id, zeta_posterior, zeta_sd),
-      by = "patient_id"
-    ) %>%
-    mutate(
-      # Integrated score categories
-      zeta_tertile_label = case_when(
-        zeta_posterior <= quantile(zeta_posterior, 1/3, na.rm = TRUE) ~ "Low (T1)",
-        zeta_posterior <= quantile(zeta_posterior, 2/3, na.rm = TRUE) ~ "Medium (T2)",
-        zeta_posterior > quantile(zeta_posterior, 2/3, na.rm = TRUE) ~ "High (T3)",
-        TRUE ~ NA_character_
-      ),
-      
-      # Continuous score (for Cox models)
-      zeta_continuous = zeta_posterior,
-      
-      # Risk categories based on integrated score
-      risk_category = case_when(
-        zeta_posterior <= 0.25 ~ "Low Risk",
-        zeta_posterior > 0.25 & zeta_posterior <= 0.75 ~ "Medium Risk",
-        zeta_posterior > 0.75 ~ "High Risk",
-        TRUE ~ NA_character_
-      ),
-      
-      # Uncertainty categories
-      uncertainty_category = case_when(
-        zeta_sd <= quantile(zeta_sd, 1/3, na.rm = TRUE) ~ "Low Uncertainty",
-        zeta_sd <= quantile(zeta_sd, 2/3, na.rm = TRUE) ~ "Medium Uncertainty",
-        zeta_sd > quantile(zeta_sd, 2/3, na.rm = TRUE) ~ "High Uncertainty",
-        TRUE ~ NA_character_
-      )
-    )
-} else {
-  # Create placeholder integrated scores for demonstration
-  survival_data <- survival_data %>%
-    mutate(
-      zeta_continuous = (her2_ihc_numeric/3 + 
-                           scale(erbb2_rna_log2)[,1]/4 + 
-                           scale(erbb2_cnv_log2)[,1]/4),
-      zeta_tertile_label = case_when(
-        zeta_continuous <= quantile(zeta_continuous, 1/3, na.rm = TRUE) ~ "Low (T1)",
-        zeta_continuous <= quantile(zeta_continuous, 2/3, na.rm = TRUE) ~ "Medium (T2)",
-        zeta_continuous > quantile(zeta_continuous, 2/3, na.rm = TRUE) ~ "High (T3)",
-        TRUE ~ NA_character_
-      ),
-      risk_category = case_when(
-        zeta_continuous <= quantile(zeta_continuous, 1/3, na.rm = TRUE) ~ "Low Risk",
-        zeta_continuous > quantile(zeta_continuous, 1/3, na.rm = TRUE) & 
-          zeta_continuous <= quantile(zeta_continuous, 2/3, na.rm = TRUE) ~ "Medium Risk",
-        zeta_continuous > quantile(zeta_continuous, 2/3, na.rm = TRUE) ~ "High Risk",
-        TRUE ~ NA_character_
-      ),
-      zeta_sd = abs(rnorm(n(), 0.1, 0.05)),
-      uncertainty_category = "Low Uncertainty"
-    )
+# Create output directories
+dirs_to_create <- c("figures/clinical", "tables/clinical", "results/clinical")
+for (dir in dirs_to_create) {
+  if (!dir.exists(dir)) {
+    dir.create(dir, recursive = TRUE)
+    cat("Created directory:", dir, "\n")
+  }
 }
 
-# Final data cleaning
-survival_data <- survival_data %>%
-  filter(
-    !is.na(zeta_continuous),
-    !is.na(her2_traditional),
-    !is.na(rna_quartile_label),
-    !is.na(cnv_category_label),
-    os_time > 0,
-    pfi_time > 0
+# =============================================================================
+# 1. LOAD AND MERGE REAL DATA FROM MULTIPLE SOURCES
+# =============================================================================
+
+cat("1. Loading and merging real data from multiple sources...\n")
+
+# Load Bayesian scores (your main results!)
+if (!file.exists("data/results/latent_her2_scores.rds")) {
+  stop("ERROR: latent_her2_scores.rds not found. Please run Sessions 3-4 first.")
+}
+
+latent_scores <- readRDS("data/results/latent_her2_scores.rds")
+cat("✓ Bayesian scores loaded\n")
+cat(sprintf("  - %d patients with latent HER2 scores\n", nrow(latent_scores)))
+
+# Load clinical data for survival information
+if (!file.exists("data/processed/tcga_clinical.rds")) {
+  stop("ERROR: tcga_clinical.rds not found. Please run Session 1 first.")
+}
+
+clinical_data <- readRDS("data/processed/tcga_clinical.rds")
+cat("✓ Clinical data loaded\n")
+cat(sprintf("  - %d patients in clinical dataset\n", nrow(clinical_data)))
+
+# Check clinical data columns for survival
+clinical_cols <- names(clinical_data)
+survival_cols <- clinical_cols[grepl("survival|time|event|death|status|vital", clinical_cols, ignore.case = TRUE)]
+cat("  - Survival-related columns:", paste(survival_cols, collapse = ", "), "\n")
+
+# Load harmonized platform data  
+if (!file.exists("data/processed/harmonized_dataset.rds")) {
+  stop("ERROR: harmonized_dataset.rds not found. Please run Session 2 first.")
+}
+
+harmonized_data <- readRDS("data/processed/harmonized_dataset.rds")
+cat("✓ Harmonized platform data loaded\n")
+cat(sprintf("  - %d patients in harmonized dataset\n", nrow(harmonized_data)))
+
+# =============================================================================
+# 2. MERGE ALL DATA SOURCES
+# =============================================================================
+
+cat("\n2. Merging data sources for survival analysis...\n")
+
+# Start with Bayesian scores as the base - use explicit dplyr namespace
+survival_data <- latent_scores %>%
+  dplyr::rename(
+    zeta_continuous = latent_her2_score,
+    her2_traditional = her2_ihc_status
+  ) %>%
+  # Add platform data
+  dplyr::left_join(
+    harmonized_data %>% dplyr::select(patient_id, dplyr::any_of(c("age", "her2_status", "her2_binary", 
+                                                                  "erbb2_rna_log2", "erbb2_cnv", "erbb2_rna", "erbb2_cnv_log2"))),
+    by = "patient_id"
+  ) %>%
+  # Add clinical survival data
+  dplyr::left_join(
+    clinical_data %>% dplyr::select(patient_id, dplyr::any_of(survival_cols)),
+    by = "patient_id"
   )
 
-cat("✓ Survival data prepared\n")
-cat(sprintf("   - Sample size: %d patients\n", nrow(survival_data)))
-cat(sprintf("   - Median follow-up: %.1f years\n", median(survival_data$os_time)))
-cat(sprintf("   - Events (OS): %d (%.1f%%)\n", 
-            sum(survival_data$os_event), 
-            mean(survival_data$os_event) * 100))
-cat(sprintf("   - Events (PFI): %d (%.1f%%)\n", 
-            sum(survival_data$pfi_event), 
-            mean(survival_data$pfi_event) * 100))
+cat(sprintf("✓ Data merged: %d patients\n", nrow(survival_data)))
+
+# Create survival variables from available clinical data
+cat("Checking for survival data in merged dataset...\n")
+merged_cols <- names(survival_data)
+survival_related <- merged_cols[grepl("survival|time|event|death|status|vital", merged_cols, ignore.case = TRUE)]
+cat("Available survival-related columns:", paste(survival_related, collapse = ", "), "\n")
+
+# Check specifically for TCGA standard survival columns
+tcga_survival_cols <- c("days_to_death", "days_to_last_follow_up", "vital_status", "survival_time", "event")
+existing_survival_cols <- tcga_survival_cols[tcga_survival_cols %in% merged_cols]
+cat("TCGA survival columns found:", paste(existing_survival_cols, collapse = ", "), "\n")
+
+# Initialize survival variables as NA
+survival_data$os_time_years <- NA_real_
+survival_data$os_event <- NA_real_
+
+# Only create survival variables if we have the necessary columns
+if ("survival_time" %in% merged_cols) {
+  cat("Using survival_time column\n")
+  survival_data$os_time_years <- ifelse(!is.na(survival_data$survival_time), 
+                                        pmax(as.numeric(survival_data$survival_time), 0.01), 
+                                        NA_real_)
+}
+
+if ("days_to_death" %in% merged_cols && "days_to_last_follow_up" %in% merged_cols) {
+  cat("Using days_to_death and days_to_last_follow_up columns\n")
+  survival_data$os_time_years <- ifelse(
+    !is.na(survival_data$days_to_death) | !is.na(survival_data$days_to_last_follow_up),
+    pmax(ifelse(!is.na(survival_data$days_to_death), 
+                as.numeric(survival_data$days_to_death), 
+                as.numeric(survival_data$days_to_last_follow_up)) / 365.25, 0.01),
+    survival_data$os_time_years  # Keep existing value if both are NA
+  )
+}
+
+if ("days_to_death" %in% merged_cols && !"days_to_last_follow_up" %in% merged_cols) {
+  cat("Using days_to_death column only\n")
+  survival_data$os_time_years <- ifelse(!is.na(survival_data$days_to_death),
+                                        pmax(as.numeric(survival_data$days_to_death) / 365.25, 0.01),
+                                        survival_data$os_time_years)
+}
+
+if ("days_to_last_follow_up" %in% merged_cols && !"days_to_death" %in% merged_cols) {
+  cat("Using days_to_last_follow_up column only\n")
+  survival_data$os_time_years <- ifelse(!is.na(survival_data$days_to_last_follow_up),
+                                        pmax(as.numeric(survival_data$days_to_last_follow_up) / 365.25, 0.01),
+                                        survival_data$os_time_years)
+}
+
+# Create event indicators
+if ("event" %in% merged_cols) {
+  cat("Using event column\n")
+  survival_data$os_event <- ifelse(!is.na(survival_data$event), 
+                                   as.numeric(survival_data$event), 
+                                   NA_real_)
+}
+
+if ("vital_status" %in% merged_cols) {
+  cat("Using vital_status column\n")
+  survival_data$os_event <- ifelse(!is.na(survival_data$vital_status), 
+                                   as.numeric(survival_data$vital_status == "Dead"), 
+                                   survival_data$os_event)
+}
+
+if ("days_to_death" %in% merged_cols) {
+  cat("Using days_to_death for event indicator\n")
+  survival_data$os_event <- ifelse(!is.na(survival_data$days_to_death), 
+                                   1,  # Death occurred
+                                   survival_data$os_event)
+}
+
+if ("days_to_last_follow_up" %in% merged_cols && !"days_to_death" %in% merged_cols) {
+  cat("Using days_to_last_follow_up for censoring\n")
+  survival_data$os_event <- ifelse(!is.na(survival_data$days_to_last_follow_up) & is.na(survival_data$os_event), 
+                                   0,  # Censored
+                                   survival_data$os_event)
+}
+
+# Check how much real survival data we have
+patients_with_survival <- sum(!is.na(survival_data$os_time_years) & !is.na(survival_data$os_event))
+cat(sprintf("✓ Real TCGA survival data available for %d patients\n", patients_with_survival))
+
+if (patients_with_survival < 50) {
+  cat("ERROR: Insufficient real survival data for analysis\n")
+  cat("Please ensure TCGA clinical data contains survival information\n")
+  cat("Available survival columns in clinical data:\n")
+  print(survival_cols)
+  stop("Cannot proceed without real survival data - no simulation allowed")
+}
+
+# Final data cleaning - use more permissive filtering
+survival_data <- survival_data %>%
+  filter(
+    !is.na(os_time_years),           # Must have survival time
+    !is.na(os_event),                # Must have event status
+    os_time_years > 0,               # Positive survival time
+    os_time_years <= 20,             # Reasonable upper bound
+    !is.na(patient_id)               # Must have patient ID
+  )
+
+cat("✓ Survival data prepared using real modeling results\n")
+cat(sprintf("   - Final sample size: %d patients\n", nrow(survival_data)))
+cat(sprintf("   - Median follow-up: %.1f years\n", median(survival_data$os_time_years, na.rm = TRUE)))
+cat(sprintf("   - Events (deaths): %d (%.1f%%)\n", 
+            sum(survival_data$os_event, na.rm = TRUE), 
+            mean(survival_data$os_event, na.rm = TRUE) * 100))
+
+# Check data availability for different methods
+cat("\nData availability by method:\n")
+cat(sprintf("   - Traditional HER2: %d patients\n", sum(!is.na(survival_data$her2_traditional) & survival_data$her2_traditional != "Unknown")))
+cat(sprintf("   - RNA quartiles: %d patients\n", sum(!is.na(survival_data$rna_quartile))))
+cat(sprintf("   - CNV categories: %d patients\n", sum(!is.na(survival_data$cnv_category))))
+cat(sprintf("   - Bayesian scores: %d patients\n", sum(!is.na(survival_data$zeta_continuous))))
 
 # =============================================================================
-# 2. SURVIVAL ANALYSIS BY DIFFERENT HER2 METHODS
+# 3. SURVIVAL ANALYSIS BY DIFFERENT HER2 METHODS
 # =============================================================================
 
-cat("2. Performing survival analysis by different HER2 methods...\n")
+cat("\n3. Performing survival analysis by different HER2 methods...\n")
 
-# Function to perform survival analysis
-perform_survival_analysis <- function(data, grouping_var, time_var, event_var, method_name) {
+# Function to perform comprehensive survival analysis
+perform_survival_analysis <- function(data, grouping_var, method_name) {
+  
+  # Filter for complete cases for this specific analysis
+  analysis_data <- data %>%
+    filter(!is.na(.data[[grouping_var]]), .data[[grouping_var]] != "Unknown")
+  
+  if (nrow(analysis_data) < 10) {
+    cat(sprintf("   Warning: Insufficient data for %s (%d patients)\n", method_name, nrow(analysis_data)))
+    return(list(
+      method = method_name,
+      n_total = nrow(analysis_data),
+      n_events = 0,
+      error = "Insufficient data"
+    ))
+  }
   
   # Create survival object
-  surv_obj <- Surv(data[[time_var]], data[[event_var]])
+  surv_obj <- Surv(analysis_data$os_time_years, analysis_data$os_event)
   
   # Fit survival curves
-  fit <- survfit(surv_obj ~ data[[grouping_var]])
+  formula_str <- paste0("surv_obj ~ ", grouping_var)
+  fit <- survfit(as.formula(formula_str), data = analysis_data)
   
   # Log-rank test
-  logrank_test <- survdiff(surv_obj ~ data[[grouping_var]])
+  logrank_test <- survdiff(as.formula(formula_str), data = analysis_data)
   logrank_p <- 1 - pchisq(logrank_test$chisq, df = length(logrank_test$n) - 1)
   
   # Cox proportional hazards model
-  cox_data <- data[, c(grouping_var, time_var, event_var, "age", "grade_numeric", "stage_simplified")]
-  cox_data <- cox_data[complete.cases(cox_data), ]
-  
-  # Create formula for Cox model
-  cox_formula <- as.formula(paste0("Surv(", time_var, ", ", event_var, ") ~ ", 
-                                   grouping_var, " + age + grade_numeric + stage_simplified"))
-  
-  cox_model <- coxph(cox_formula, data = cox_data)
-  
-  # Calculate C-index
-  c_index <- concordance(cox_model)$concordance
-  
-  # Extract hazard ratios
-  cox_summary <- summary(cox_model)
-  hr_table <- data.frame(
-    variable = rownames(cox_summary$coefficients),
-    hr = cox_summary$coefficients[, "exp(coef)"],
-    hr_lower = cox_summary$conf.int[, "lower .95"],
-    hr_upper = cox_summary$conf.int[, "upper .95"],
-    p_value = cox_summary$coefficients[, "Pr(>|z|)"]
-  )
+  tryCatch({
+    cox_formula <- as.formula(paste0("Surv(os_time_years, os_event) ~ ", grouping_var))
+    cox_model <- coxph(cox_formula, data = analysis_data)
+    c_index <- concordance(cox_model)$concordance
+    
+    # Extract hazard ratios
+    cox_summary <- summary(cox_model)
+    hr_table <- data.frame(
+      variable = rownames(cox_summary$coefficients),
+      hr = cox_summary$coefficients[, "exp(coef)"],
+      hr_lower = cox_summary$conf.int[, "lower .95"],
+      hr_upper = cox_summary$conf.int[, "upper .95"], 
+      p_value = cox_summary$coefficients[, "Pr(>|z|)"],
+      stringsAsFactors = FALSE
+    )
+  }, error = function(e) {
+    cat(sprintf("   Warning: Cox model failed for %s: %s\n", method_name, e$message))
+    cox_model <- NULL
+    c_index <- NA
+    hr_table <- data.frame()
+  })
   
   # 5-year survival rates
-  surv_5yr <- summary(fit, times = 5)
+  surv_5yr <- tryCatch({
+    summary(fit, times = 5)
+  }, error = function(e) NULL)
   
-  surv_rates <- if (length(surv_5yr$time) > 0) {
+  surv_rates <- if (!is.null(surv_5yr) && length(surv_5yr$time) > 0) {
     data.frame(
       group = surv_5yr$strata,
       survival_5yr = surv_5yr$surv,
       survival_5yr_lower = surv_5yr$lower,
-      survival_5yr_upper = surv_5yr$upper
+      survival_5yr_upper = surv_5yr$upper,
+      stringsAsFactors = FALSE
     )
   } else {
-    data.frame(
-      group = levels(as.factor(data[[grouping_var]])),
-      survival_5yr = NA,
-      survival_5yr_lower = NA,
-      survival_5yr_upper = NA
-    )
+    data.frame()
   }
   
   return(list(
@@ -254,583 +308,307 @@ perform_survival_analysis <- function(data, grouping_var, time_var, event_var, m
     c_index = c_index,
     hr_table = hr_table,
     surv_rates = surv_rates,
-    n_events = sum(data[[event_var]]),
-    n_total = nrow(data)
+    n_events = sum(analysis_data$os_event),
+    n_total = nrow(analysis_data),
+    analysis_data = analysis_data
   ))
 }
 
-# Perform survival analysis for different methods
+# Define survival analysis methods using real data
 survival_methods <- list(
-  list(var = "her2_traditional", name = "Traditional IHC"),
+  list(var = "her2_traditional", name = "Traditional HER2"),
   list(var = "rna_quartile_label", name = "RNA Quartiles"),
-  list(var = "cnv_category_label", name = "CNV Categories"),
-  list(var = "zeta_tertile_label", name = "Integrated Score")
+  list(var = "cnv_category_label", name = "CNV Categories"), 
+  list(var = "zeta_tertile_label", name = "Integrated Bayesian Score")
 )
 
-# Overall survival analysis
+# Perform survival analysis for different methods
 os_results <- list()
 for (method in survival_methods) {
+  cat(sprintf("   Analyzing %s...\n", method$name))
   os_results[[method$name]] <- perform_survival_analysis(
-    survival_data, method$var, "os_time", "os_event", method$name
+    survival_data, method$var, method$name
   )
+  
+  # Print summary if successful
+  if (!is.null(os_results[[method$name]]$fit)) {
+    result <- os_results[[method$name]]
+    cat(sprintf("     ✓ %d patients, %d events, log-rank p=%.3f\n", 
+                result$n_total, result$n_events, result$logrank_p))
+  }
 }
 
-# Progression-free interval analysis
-pfi_results <- list()
-for (method in survival_methods) {
-  pfi_results[[method$name]] <- perform_survival_analysis(
-    survival_data, method$var, "pfi_time", "pfi_event", method$name
-  )
-}
-
-# Extract C-indices for comparison
-c_index_comparison <- data.frame(
-  method = names(os_results),
-  os_c_index = sapply(os_results, function(x) x$c_index),
-  pfi_c_index = sapply(pfi_results, function(x) x$c_index),
-  os_logrank_p = sapply(os_results, function(x) x$logrank_p),
-  pfi_logrank_p = sapply(pfi_results, function(x) x$logrank_p)
-)
-
-cat("✓ Survival analysis completed\n")
-cat("   C-index Comparison (Overall Survival):\n")
-print(c_index_comparison[, c("method", "os_c_index", "os_logrank_p")])
-
 # =============================================================================
-# 3. TIME-DEPENDENT ROC ANALYSIS
+# 4. CREATE KAPLAN-MEIER PLOTS
 # =============================================================================
 
-cat("3. Performing time-dependent ROC analysis...\n")
+cat("\n4. Creating Kaplan-Meier survival plots...\n")
 
-# Prepare data for time-dependent ROC
-roc_data <- survival_data %>%
-  filter(complete.cases(her2_ihc_numeric, erbb2_rna_log2, erbb2_cnv_log2, zeta_continuous)) %>%
-  mutate(
-    # Standardize continuous variables for ROC
-    ihc_score = her2_ihc_numeric,
-    rna_score = scale(erbb2_rna_log2)[,1],
-    cnv_score = scale(erbb2_cnv_log2)[,1],
-    integrated_score = zeta_continuous
-  )
-
-# Time points for ROC analysis
-time_points <- c(1, 3, 5)
-
-# Function to calculate time-dependent AUC
-calculate_time_auc <- function(data, score_var, time_var, event_var, time_points) {
-  tryCatch({
-    roc_obj <- timeROC(
-      T = data[[time_var]],
-      delta = data[[event_var]], 
-      marker = data[[score_var]],
-      times = time_points,
-      iid = TRUE
-    )
-    
-    return(data.frame(
-      time = time_points,
-      auc = roc_obj$AUC,
-      auc_se = sqrt(diag(roc_obj$inference$varcov))
-    ))
-  }, error = function(e) {
-    return(data.frame(
-      time = time_points,
-      auc = NA,
-      auc_se = NA
-    ))
-  })
-}
-
-# Calculate time-dependent AUC for each method
-time_auc_results <- list()
-score_vars <- c("ihc_score", "rna_score", "cnv_score", "integrated_score")
-score_names <- c("IHC", "RNA", "CNV", "Integrated")
-
-for (i in 1:length(score_vars)) {
-  # Overall survival
-  os_auc <- calculate_time_auc(roc_data, score_vars[i], "os_time", "os_event", time_points)
-  os_auc$method <- score_names[i]
-  os_auc$endpoint <- "OS"
+# Function to create publication-quality KM plot
+create_km_plot <- function(analysis_result, colors = NULL) {
   
-  # Progression-free interval
-  pfi_auc <- calculate_time_auc(roc_data, score_vars[i], "pfi_time", "pfi_event", time_points)
-  pfi_auc$method <- score_names[i]
-  pfi_auc$endpoint <- "PFI"
-  
-  time_auc_results[[score_names[i]]] <- rbind(os_auc, pfi_auc)
-}
-
-# Combine results
-time_auc_combined <- do.call(rbind, time_auc_results)
-
-cat("✓ Time-dependent ROC analysis completed\n")
-cat("   5-year AUC Comparison (Overall Survival):\n")
-auc_5yr_os <- time_auc_combined %>% 
-  filter(endpoint == "OS", time == 5) %>%
-  select(method, auc, auc_se)
-print(auc_5yr_os)
-
-# =============================================================================
-# 4. RISK STRATIFICATION ANALYSIS
-# =============================================================================
-
-cat("4. Performing risk stratification analysis...\n")
-
-# Risk stratification using integrated score
-risk_stratification <- survival_data %>%
-  mutate(
-    # Create risk groups based on integrated score
-    risk_group = case_when(
-      zeta_continuous <= quantile(zeta_continuous, 0.25, na.rm = TRUE) ~ "Low Risk",
-      zeta_continuous > quantile(zeta_continuous, 0.25, na.rm = TRUE) & 
-        zeta_continuous <= quantile(zeta_continuous, 0.75, na.rm = TRUE) ~ "Medium Risk",
-      zeta_continuous > quantile(zeta_continuous, 0.75, na.rm = TRUE) ~ "High Risk",
-      TRUE ~ NA_character_
-    )
-  ) %>%
-  filter(!is.na(risk_group))
-
-# Survival analysis by risk groups
-risk_surv_fit <- survfit(Surv(os_time, os_event) ~ risk_group, data = risk_stratification)
-risk_logrank <- survdiff(Surv(os_time, os_event) ~ risk_group, data = risk_stratification)
-risk_logrank_p <- 1 - pchisq(risk_logrank$chisq, df = length(risk_logrank$n) - 1)
-
-# Calculate survival statistics by risk group
-risk_survival_stats <- risk_stratification %>%
-  group_by(risk_group) %>%
-  summarise(
-    n = n(),
-    events = sum(os_event),
-    median_survival = median(os_time[os_event == 1]),
-    survival_rate_1yr = mean(os_time >= 1 | os_event == 0),
-    survival_rate_3yr = mean(os_time >= 3 | os_event == 0),
-    survival_rate_5yr = mean(os_time >= 5 | os_event == 0),
-    .groups = "drop"
-  )
-
-# Cox model for risk stratification
-risk_cox <- coxph(Surv(os_time, os_event) ~ risk_group + age + grade_numeric + stage_simplified, 
-                  data = risk_stratification)
-risk_cox_summary <- summary(risk_cox)
-
-cat("✓ Risk stratification analysis completed\n")
-cat("   Risk Group Survival Statistics:\n")
-print(risk_survival_stats)
-cat(sprintf("   Log-rank p-value: %.2e\n", risk_logrank_p))
-
-# =============================================================================
-# 5. SUBGROUP ANALYSIS
-# =============================================================================
-
-cat("5. Performing subgroup analysis...\n")
-
-# Function to perform subgroup analysis
-subgroup_analysis <- function(data, subgroup_var, subgroup_name) {
-  
-  subgroup_results <- list()
-  
-  for (level in unique(data[[subgroup_var]])) {
-    if (is.na(level)) next
-    
-    subgroup_data <- data[data[[subgroup_var]] == level & !is.na(data[[subgroup_var]]), ]
-    
-    if (nrow(subgroup_data) < 20) next  # Skip small subgroups
-    
-    # Cox model for integrated score in this subgroup
-    tryCatch({
-      cox_model <- coxph(Surv(os_time, os_event) ~ zeta_continuous + age + grade_numeric, 
-                         data = subgroup_data)
-      
-      cox_summary <- summary(cox_model)
-      
-      # Extract HR for integrated score
-      zeta_idx <- grep("zeta_continuous", rownames(cox_summary$coefficients))
-      if (length(zeta_idx) > 0) {
-        hr_zeta <- cox_summary$coefficients[zeta_idx, "exp(coef)"]
-        hr_lower <- cox_summary$conf.int[zeta_idx, "lower .95"]
-        hr_upper <- cox_summary$conf.int[zeta_idx, "upper .95"]
-        p_value <- cox_summary$coefficients[zeta_idx, "Pr(>|z|)"]
-        
-        subgroup_results[[level]] <- data.frame(
-          subgroup = subgroup_name,
-          level = level,
-          n = nrow(subgroup_data),
-          events = sum(subgroup_data$os_event),
-          hr = hr_zeta,
-          hr_lower = hr_lower,
-          hr_upper = hr_upper,
-          p_value = p_value,
-          c_index = concordance(cox_model)$concordance
-        )
-      }
-    }, error = function(e) {
-      # Skip problematic subgroups
-    })
+  if (is.null(analysis_result$fit) || is.null(analysis_result$analysis_data)) {
+    return(ggplot() + theme_void() + labs(title = paste("No data available for", analysis_result$method)))
   }
   
-  if (length(subgroup_results) > 0) {
-    return(do.call(rbind, subgroup_results))
+  # Default colors if not provided
+  if (is.null(colors)) {
+    n_groups <- length(unique(analysis_result$analysis_data[[names(analysis_result$analysis_data)[length(names(analysis_result$analysis_data))]]]))
+    colors <- RColorBrewer::brewer.pal(min(n_groups, 8), "Set2")
+  }
+  
+  # Create the plot
+  km_plot <- ggsurvplot(
+    analysis_result$fit,
+    data = analysis_result$analysis_data,
+    pval = TRUE,
+    pval.coord = c(0.02, 0.02),
+    conf.int = TRUE,
+    conf.int.alpha = 0.1,
+    risk.table = TRUE,
+    risk.table.height = 0.3,
+    ncensor.plot = FALSE,
+    surv.median.line = "hv",
+    ggtheme = theme_bw(base_size = 12),
+    palette = colors,
+    title = paste("Overall Survival -", analysis_result$method),
+    subtitle = sprintf("Log-rank p = %.3f, C-index = %.3f", 
+                       analysis_result$logrank_p, 
+                       ifelse(is.na(analysis_result$c_index), 0, analysis_result$c_index)),
+    xlab = "Time (years)",
+    ylab = "Overall Survival Probability",
+    legend.title = analysis_result$method,
+    font.main = c(14, "bold"),
+    font.submain = c(12, "plain"),
+    font.x = c(12, "bold"),
+    font.y = c(12, "bold"),
+    font.legend = c(10, "plain")
+  )
+  
+  return(km_plot)
+}
+
+# Create and save KM plots for each method
+km_plots <- list()
+
+for (method_name in names(os_results)) {
+  if (!is.null(os_results[[method_name]]$fit)) {
+    cat(sprintf("   Creating KM plot for %s...\n", method_name))
+    
+    # Create plot
+    km_plots[[method_name]] <- create_km_plot(os_results[[method_name]])
+    
+    # Save plot
+    method_clean <- gsub("[^A-Za-z0-9]", "_", method_name)
+    filename <- sprintf("figures/clinical/km_survival_%s.png", method_clean)
+    
+    ggsave(
+      filename = filename,
+      plot = print(km_plots[[method_name]]),
+      width = 12, height = 10, dpi = 300
+    )
+    
+    cat(sprintf("     ✓ Saved: %s\n", filename))
   } else {
-    return(NULL)
+    cat(sprintf("   ⚠ Skipping %s - insufficient data\n", method_name))
   }
 }
 
-# Perform subgroup analyses
-subgroup_vars <- c("age_group", "hr_status", "stage_simplified", "grade_numeric")
-subgroup_names <- c("Age Group", "HR Status", "Stage", "Grade")
+# =============================================================================
+# 5. COMPARE MODEL PERFORMANCE
+# =============================================================================
 
-subgroup_results <- list()
-for (i in 1:length(subgroup_vars)) {
-  result <- subgroup_analysis(survival_data, subgroup_vars[i], subgroup_names[i])
-  if (!is.null(result)) {
-    subgroup_results[[subgroup_names[i]]] <- result
-  }
-}
+cat("\n5. Comparing model performance...\n")
 
-# Combine subgroup results
-if (length(subgroup_results) > 0) {
-  subgroup_combined <- do.call(rbind, subgroup_results)
-  rownames(subgroup_combined) <- NULL
+# Create performance comparison table
+performance_comparison <- data.frame()
+
+for (method_name in names(os_results)) {
+  result <- os_results[[method_name]]
   
-  cat("✓ Subgroup analysis completed\n")
-  cat("   Hazard Ratios by Subgroup:\n")
-  print(subgroup_combined[, c("subgroup", "level", "n", "hr", "p_value")])
+  if (!is.null(result$fit)) {
+    performance_comparison <- rbind(performance_comparison, data.frame(
+      Method = result$method,
+      N_Patients = result$n_total,
+      N_Events = result$n_events,
+      Event_Rate = round(result$n_events / result$n_total * 100, 1),
+      LogRank_P = round(result$logrank_p, 4),
+      C_Index = round(ifelse(is.na(result$c_index), 0, result$c_index), 3),
+      Significant = ifelse(result$logrank_p < 0.05, "Yes", "No"),
+      stringsAsFactors = FALSE
+    ))
+  }
+}
+
+# Sort by C-index (descending)
+if (nrow(performance_comparison) > 0) {
+  performance_comparison <- performance_comparison[order(-performance_comparison$C_Index), ]
+  
+  cat("✓ Performance comparison completed\n")
+  cat("\nModel Performance Summary:\n")
+  print(performance_comparison)
+  
+  # Save performance comparison
+  write.csv(performance_comparison, "tables/clinical/performance_comparison.csv", row.names = FALSE)
+  
 } else {
-  cat("✓ Subgroup analysis completed (insufficient data for detailed analysis)\n")
+  cat("⚠ No successful analyses to compare\n")
 }
 
 # =============================================================================
-# 6. CLINICAL DECISION CURVE ANALYSIS
+# 6. RISK STRATIFICATION ANALYSIS
 # =============================================================================
 
-cat("6. Performing clinical decision curve analysis...\n")
+cat("\n6. Performing risk stratification analysis...\n")
 
-# Decision curve analysis function (simplified)
-decision_curve_analysis <- function(data, time_point = 5) {
+# Create comprehensive risk analysis using Bayesian scores
+if (sum(!is.na(survival_data$zeta_continuous)) > 20) {
   
-  # Create binary outcome at specified time point
-  data$outcome <- ifelse(data$os_time <= time_point & data$os_event == 1, 1, 0)
+  # Continuous risk analysis
+  risk_data <- survival_data %>%
+    filter(!is.na(zeta_continuous)) %>%
+    mutate(
+      zeta_binary = ifelse(zeta_continuous > median(zeta_continuous, na.rm = TRUE), "High", "Low"),
+      zeta_quartile = ntile(zeta_continuous, 4),
+      zeta_quartile_label = paste0("Q", zeta_quartile)
+    )
   
-  # Threshold probabilities
-  thresholds <- seq(0.01, 0.99, by = 0.01)
+  # Binary risk stratification
+  binary_analysis <- perform_survival_analysis(risk_data, "zeta_binary", "Binary Risk (Median Split)")
   
-  # Calculate net benefit for each method
-  methods <- c("her2_traditional", "zeta_continuous")
-  method_names <- c("Traditional IHC", "Integrated Score")
-  
-  net_benefit_results <- data.frame()
-  
-  for (i in 1:length(methods)) {
-    method <- methods[i]
+  if (!is.null(binary_analysis$fit)) {
+    # Create risk stratification plot
+    risk_km_plot <- create_km_plot(binary_analysis, colors = c("#2E86AB", "#E63946"))
     
-    # Convert to probability scale
-    if (method == "her2_traditional") {
-      prob_score <- ifelse(data[[method]] == "Positive", 0.3, 0.1)  # Simplified
-    } else {
-      prob_score <- data[[method]]  # Already on 0-1 scale
-    }
+    # Save risk plot
+    ggsave(
+      filename = "figures/clinical/risk_stratification_binary.png",
+      plot = print(risk_km_plot),
+      width = 12, height = 10, dpi = 300
+    )
     
-    for (threshold in thresholds) {
-      # Classify as high risk if probability > threshold
-      high_risk <- prob_score > threshold
-      
-      # Calculate net benefit
-      tp <- sum(high_risk & data$outcome == 1)
-      fp <- sum(high_risk & data$outcome == 0)
-      
-      total_pos <- sum(data$outcome == 1)
-      total_neg <- sum(data$outcome == 0)
-      
-      net_benefit <- (tp / nrow(data)) - (fp / nrow(data)) * (threshold / (1 - threshold))
-      
-      net_benefit_results <- rbind(net_benefit_results, data.frame(
-        method = method_names[i],
-        threshold = threshold,
-        net_benefit = net_benefit,
-        tp = tp,
-        fp = fp
-      ))
-    }
+    cat("   ✓ Binary risk stratification completed\n")
+    cat(sprintf("     - High risk: %d patients\n", sum(risk_data$zeta_binary == "High")))
+    cat(sprintf("     - Low risk: %d patients\n", sum(risk_data$zeta_binary == "Low")))
+    cat(sprintf("     - Log-rank p: %.4f\n", binary_analysis$logrank_p))
   }
   
-  # Add "treat all" and "treat none" strategies
-  for (threshold in thresholds) {
-    # Treat all
-    treat_all_benefit <- (sum(data$outcome == 1) / nrow(data)) - 
-      (sum(data$outcome == 0) / nrow(data)) * (threshold / (1 - threshold))
+  # Quartile risk analysis
+  quartile_analysis <- perform_survival_analysis(risk_data, "zeta_quartile_label", "Quartile Risk Stratification")
+  
+  if (!is.null(quartile_analysis$fit)) {
+    # Create quartile plot
+    quartile_km_plot <- create_km_plot(quartile_analysis)
     
-    # Treat none
-    treat_none_benefit <- 0
+    # Save quartile plot
+    ggsave(
+      filename = "figures/clinical/risk_stratification_quartiles.png",
+      plot = print(quartile_km_plot),
+      width = 12, height = 10, dpi = 300
+    )
     
-    net_benefit_results <- rbind(net_benefit_results, 
-                                 data.frame(
-                                   method = "Treat All",
-                                   threshold = threshold,
-                                   net_benefit = treat_all_benefit,
-                                   tp = sum(data$outcome == 1),
-                                   fp = sum(data$outcome == 0)
-                                 ),
-                                 data.frame(
-                                   method = "Treat None",
-                                   threshold = threshold,
-                                   net_benefit = treat_none_benefit,
-                                   tp = 0,
-                                   fp = 0
-                                 ))
+    cat("   ✓ Quartile risk stratification completed\n")
+    cat(sprintf("     - Log-rank p: %.4f\n", quartile_analysis$logrank_p))
   }
   
-  return(net_benefit_results)
+} else {
+  cat("   ⚠ Insufficient Bayesian score data for risk stratification\n")
 }
 
-# Perform decision curve analysis
-decision_curves <- decision_curve_analysis(survival_data, time_point = 5)
-
-# Calculate area under the decision curve
-auc_decision <- decision_curves %>%
-  filter(method %in% c("Traditional IHC", "Integrated Score")) %>%
-  group_by(method) %>%
-  summarise(
-    auc_decision = sum(net_benefit[net_benefit > 0], na.rm = TRUE) * 0.01,
-    .groups = "drop"
-  )
-
-cat("✓ Clinical decision curve analysis completed\n")
-cat("   Decision Curve AUC:\n")
-print(auc_decision)
-
 # =============================================================================
-# 7. GENERATE SURVIVAL PLOTS
+# 7. CLINICAL VALIDATION SUMMARY
 # =============================================================================
 
-cat("7. Generating survival plots...\n")
+cat("\n7. Creating clinical validation summary...\n")
 
-# Create Kaplan-Meier plots
-pdf("results/kaplan_meier_plots.pdf", width = 16, height = 12)
-
-# Plot 1: Traditional IHC
-p1 <- ggsurvplot(os_results[["Traditional IHC"]]$fit,
-                 data = survival_data,
-                 risk.table = TRUE,
-                 pval = TRUE,
-                 conf.int = TRUE,
-                 title = "Overall Survival by Traditional IHC",
-                 xlab = "Time (years)",
-                 ylab = "Overall Survival Probability",
-                 legend.title = "HER2 IHC",
-                 palette = c("blue", "red"))
-
-# Plot 2: RNA Quartiles
-p2 <- ggsurvplot(os_results[["RNA Quartiles"]]$fit,
-                 data = survival_data,
-                 risk.table = TRUE,
-                 pval = TRUE,
-                 conf.int = TRUE,
-                 title = "Overall Survival by RNA Expression Quartiles",
-                 xlab = "Time (years)",
-                 ylab = "Overall Survival Probability",
-                 legend.title = "RNA Quartile",
-                 palette = brewer.pal(4, "Set1"))
-
-# Plot 3: Integrated Score
-p3 <- ggsurvplot(os_results[["Integrated Score"]]$fit,
-                 data = survival_data,
-                 risk.table = TRUE,
-                 pval = TRUE,
-                 conf.int = TRUE,
-                 title = "Overall Survival by Integrated HER2 Score",
-                 xlab = "Time (years)",
-                 ylab = "Overall Survival Probability",
-                 legend.title = "Integrated Score",
-                 palette = c("green", "orange", "red"))
-
-# Plot 4: Risk Stratification
-p4 <- ggsurvplot(risk_surv_fit,
-                 data = risk_stratification,
-                 risk.table = TRUE,
-                 pval = TRUE,
-                 conf.int = TRUE,
-                 title = "Overall Survival by Risk Stratification",
-                 xlab = "Time (years)",
-                 ylab = "Overall Survival Probability",
-                 legend.title = "Risk Group",
-                 palette = c("green", "orange", "red"))
-
-# Combine plots
-print(p1)
-print(p2)
-print(p3)
-print(p4)
-
-dev.off()
-
-cat("✓ Survival plots generated\n")
-
-# =============================================================================
-# 8. CREATE COMPREHENSIVE RESULTS SUMMARY
-# =============================================================================
-
-cat("8. Creating comprehensive results summary...\n")
-
-# Create Cox regression summary table
-cox_summary_table <- data.frame(
-  method = names(os_results),
-  n_patients = sapply(os_results, function(x) x$n_total),
-  n_events = sapply(os_results, function(x) x$n_events),
-  c_index = sapply(os_results, function(x) round(x$c_index, 3)),
-  logrank_p = sapply(os_results, function(x) {
-    if (x$logrank_p < 0.001) return("< 0.001")
-    return(round(x$logrank_p, 3))
-  })
-)
-
-# Performance improvement summary
-performance_improvement <- data.frame(
-  metric = c("C-index (OS)", "C-index (PFI)", "5-year AUC (OS)", "5-year AUC (PFI)"),
-  traditional_ihc = c(
-    os_results[["Traditional IHC"]]$c_index,
-    pfi_results[["Traditional IHC"]]$c_index,
-    time_auc_combined$auc[time_auc_combined$method == "IHC" & 
-                            time_auc_combined$endpoint == "OS" & 
-                            time_auc_combined$time == 5],
-    time_auc_combined$auc[time_auc_combined$method == "IHC" & 
-                            time_auc_combined$endpoint == "PFI" & 
-                            time_auc_combined$time == 5]
+# Compile all results
+clinical_validation_results <- list(
+  study_summary = list(
+    total_patients = nrow(survival_data),
+    median_followup = median(survival_data$os_time_years, na.rm = TRUE),
+    total_events = sum(survival_data$os_event, na.rm = TRUE),
+    event_rate = mean(survival_data$os_event, na.rm = TRUE)
   ),
-  integrated_score = c(
-    os_results[["Integrated Score"]]$c_index,
-    pfi_results[["Integrated Score"]]$c_index,
-    time_auc_combined$auc[time_auc_combined$method == "Integrated" & 
-                            time_auc_combined$endpoint == "OS" & 
-                            time_auc_combined$time == 5],
-    time_auc_combined$auc[time_auc_combined$method == "Integrated" & 
-                            time_auc_combined$endpoint == "PFI" & 
-                            time_auc_combined$time == 5]
-  )
+  survival_results = os_results,
+  performance_comparison = performance_comparison,
+  data_source = "Real TCGA modeling results with Bayesian scores"
 )
 
-performance_improvement$improvement <- performance_improvement$integrated_score - 
-  performance_improvement$traditional_ihc
+# Save complete results
+saveRDS(clinical_validation_results, "results/clinical/clinical_validation_results.rds")
 
-# Save Cox regression table
-write.csv(cox_summary_table, "results/cox_regression_table.csv", row.names = FALSE)
-
-cat("✓ Comprehensive results summary created\n")
-
-# =============================================================================
-# 9. SAVE SURVIVAL RESULTS
-# =============================================================================
-
-cat("9. Saving survival results...\n")
-
-# Create comprehensive survival results object
-survival_results <- list(
-  # Overall survival results
-  os_results = os_results,
-  pfi_results = pfi_results,
-  
-  # Performance comparison
-  c_index_comparison = c_index_comparison,
-  performance_improvement = performance_improvement,
-  
-  # Time-dependent ROC results
-  time_auc_results = time_auc_combined,
-  
-  # Risk stratification
-  risk_stratification = list(
-    survival_stats = risk_survival_stats,
-    cox_model = risk_cox,
-    logrank_p = risk_logrank_p
-  ),
-  
-  # Subgroup analysis
-  subgroup_results = if (exists("subgroup_combined")) subgroup_combined else NULL,
-  
-  # Decision curve analysis
-  decision_curves = decision_curves,
-  decision_auc = auc_decision,
-  
-  # Summary statistics
-  summary_stats = list(
-    sample_size = nrow(survival_data),
-    median_followup = median(survival_data$os_time),
-    os_events = sum(survival_data$os_event),
-    pfi_events = sum(survival_data$pfi_event),
-    c_index_improvement = os_results[["Integrated Score"]]$c_index - 
-      os_results[["Traditional IHC"]]$c_index,
-    best_logrank_p = min(sapply(os_results, function(x) x$logrank_p))
-  )
-)
-
-# Save survival results
-saveRDS(survival_results, "data/processed/survival_results.rds")
-
-cat("✓ Survival results saved\n")
-
-# =============================================================================
-# 10. UPDATE SESSION METADATA
-# =============================================================================
-
-session_metadata$survival_endpoints <- c("overall_survival", "progression_free_interval")
-
-session_metadata$risk_stratification <- list(
-  traditional_IHC = sprintf("C-index: %.3f", os_results[["Traditional IHC"]]$c_index),
-  latent_variable = sprintf("C-index: %.3f", os_results[["Integrated Score"]]$c_index),
-  improvement = sprintf("ΔC-index: %.3f", 
-                        os_results[["Integrated Score"]]$c_index - 
-                          os_results[["Traditional IHC"]]$c_index)
-)
-
-session_metadata$statistical_tests <- c("log_rank", "cox_regression", "time_dependent_ROC")
-session_metadata$next_session_inputs <- c("survival_results.rds", "all_previous_results")
-
+# Update session metadata
 session_metadata$end_time <- Sys.time()
-session_metadata$duration <- difftime(session_metadata$end_time, session_metadata$start_time, units = "mins")
+session_metadata$duration_minutes <- as.numeric(difftime(
+  session_metadata$end_time, 
+  session_metadata$start_time, 
+  units = "mins"
+))
+
+session_metadata$results_summary <- list(
+  patients_analyzed = nrow(survival_data),
+  methods_compared = length(os_results),
+  successful_analyses = sum(sapply(os_results, function(x) !is.null(x$fit))),
+  best_method = if(nrow(performance_comparison) > 0) performance_comparison$Method[1] else "None",
+  significant_results = if(nrow(performance_comparison) > 0) sum(performance_comparison$Significant == "Yes") else 0
+)
 
 # Save session metadata
 write_json(session_metadata, "metadata/session5_metadata.json", pretty = TRUE)
 
 # =============================================================================
-# 11. FINAL SUMMARY
+# 8. FINAL SUMMARY
 # =============================================================================
 
-cat("\n=== SESSION 5 COMPLETED SUCCESSFULLY ===\n")
-cat("✓ Survival analysis completed for all HER2 methods\n")
-cat("✓ Time-dependent ROC analysis performed\n")
-cat("✓ Risk stratification analysis conducted\n")
-cat("✓ Subgroup analysis performed\n")
-cat("✓ Clinical decision curve analysis completed\n")
-cat("✓ Kaplan-Meier plots generated\n")
-cat("✓ Comprehensive results summary created\n")
+cat("\n")
+cat("=== SESSION 5: CLINICAL VALIDATION COMPLETED ===\n")
+cat("✓ Used REAL modeling results with Bayesian scores\n")
+cat("✓ Survival analysis with multiple HER2 assessment methods\n")
+cat("✓ Kaplan-Meier curves with statistical testing\n")
+cat("✓ Performance comparison across methods\n")
+cat("✓ Risk stratification analysis\n")
 
-cat("\nClinical Performance Summary:\n")
-cat("C-index Comparison (Overall Survival):\n")
-for (method in names(os_results)) {
-  cat(sprintf("   - %s: %.3f (p = %.3f)\n", 
-              method, os_results[[method]]$c_index, os_results[[method]]$logrank_p))
+cat(sprintf("\nSTUDY SUMMARY:\n"))
+cat(sprintf("- Patients analyzed: %d\n", nrow(survival_data)))
+cat(sprintf("- Median follow-up: %.1f years\n", median(survival_data$os_time_years, na.rm = TRUE)))
+cat(sprintf("- Total events: %d (%.1f%%)\n", 
+            sum(survival_data$os_event, na.rm = TRUE),
+            mean(survival_data$os_event, na.rm = TRUE) * 100))
+
+if (nrow(performance_comparison) > 0) {
+  cat(sprintf("\nBEST PERFORMING METHOD:\n"))
+  best_method <- performance_comparison[1, ]
+  cat(sprintf("- Method: %s\n", best_method$Method))
+  cat(sprintf("- C-index: %.3f\n", best_method$C_Index))
+  cat(sprintf("- Log-rank p: %.4f\n", best_method$LogRank_P))
+  cat(sprintf("- Significant: %s\n", best_method$Significant))
 }
 
-cat("\nPerformance Improvement:\n")
-cat(sprintf("   - C-index improvement: %.3f\n", 
-            os_results[["Integrated Score"]]$c_index - os_results[["Traditional IHC"]]$c_index))
+cat("\nFILES CREATED:\n")
+cat("==============\n")
 
-if (exists("subgroup_combined")) {
-  cat("\nSubgroup Analysis:\n")
-  cat(sprintf("   - Consistent benefit across %d subgroups\n", nrow(subgroup_combined)))
-  cat(sprintf("   - Mean HR: %.3f\n", mean(subgroup_combined$hr, na.rm = TRUE)))
+# List created files
+figures <- list.files("figures/clinical", pattern = "\\.png$", full.names = FALSE)
+if (length(figures) > 0) {
+  cat("📊 Survival Plots:\n")
+  for (fig in figures) {
+    cat(sprintf("  - figures/clinical/%s\n", fig))
+  }
 }
 
-cat("\nRisk Stratification:\n")
-cat(sprintf("   - Low risk 5-year survival: %.1f%%\n", 
-            risk_survival_stats$survival_rate_5yr[risk_survival_stats$risk_group == "Low Risk"] * 100))
-cat(sprintf("   - High risk 5-year survival: %.1f%%\n", 
-            risk_survival_stats$survival_rate_5yr[risk_survival_stats$risk_group == "High Risk"] * 100))
-cat(sprintf("   - Risk stratification p-value: %.2e\n", risk_logrank_p))
+tables <- list.files("tables/clinical", pattern = "\\.csv$", full.names = FALSE)
+if (length(tables) > 0) {
+  cat("\n📋 Tables:\n")
+  for (tbl in tables) {
+    cat(sprintf("  - tables/clinical/%s\n", tbl))
+  }
+}
 
-cat("\n📁 Files created:\n")
-cat("   - data/processed/survival_results.rds\n")
-cat("   - results/kaplan_meier_plots.pdf\n")
-cat("   - results/cox_regression_table.csv\n")
-cat("   - metadata/session5_metadata.json\n")
+cat("\n🎯 SESSION 5 COMPLETED SUCCESSFULLY!\n")
+cat("Ready for Session 6: Publication Figures & Tables\n")
 
-cat("\n🎯 Ready for Session 6: Publication Figures & Tables\n")
-cat("Next steps: Run 06_publication_figures.R to create publication-ready materials\n")
+# Clean up environment
+rm(list = ls()[!ls() %in% c("session_metadata")])
+gc()
+
+cat("\n=== Session 5 Complete ===\n")
